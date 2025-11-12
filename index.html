@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Гоночная сессия — прогресс по командам</title>
+<style>
+:root{
+  --card:#f7f8fb; --text:#0f172a; --muted:#475569; --line:#e2e8f0; --accent:#d61f1f; --shadow:0 6px 18px rgba(15,23,42,.08);
+  --row-gap:10px; --row-pad-v:12px;
+  /* 7 цветов */
+  --c1:#ff0000; --c2:#ffd700; --c3:#0066ff; --c4:#00ced1; --c5:#7fff00; --c6:#8b4513; --c7:#000000;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:var(--text);font:500 16px/1.45 Inter,system-ui,Segoe UI,Roboto,Arial}
+.wrap{max-width:1200px;margin:16px auto;padding:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.header{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line)}
+.header h1{margin:0;font-size:20px}
+.controls{display:flex;gap:8px;flex-wrap:wrap}
+button{background:#fff;border:1px solid #dbe3ee;color:var(--text);border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer;transition:.15s}
+button:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(15,23,42,.06)}
+button.primary{background:#d61f1f;border-color:#c11212;color:#fff}
+.small{padding:6px 10px;border-radius:10px;font-size:12px}
+
+/* макет 1/3–2/3 */
+.grid{display:grid;grid-template-columns:1fr 2fr;gap:12px;padding:12px}
+@media(max-width:960px){.grid{grid-template-columns:1fr}}
+
+/* панель этапа */
+.flag{display:flex;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+.stage-pill{padding:4px 10px;border-radius:999px;background:transparent;border:none;font-weight:700;color:var(--text)}
+.timer{font-variant-numeric:tabular-nums;font-size:20px}
+
+/* таблица слева */
+.badge{width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+.table{width:100%;border-collapse:separate;border-spacing:0 var(--row-gap)}
+.table thead th{font-size:12px;color:var(--muted);text-align:left;padding:0 8px}
+.row{display:grid;grid-template-columns:minmax(120px,1fr) 48px 1fr;align-items:center;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px}
+.name{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px}
+.pos{text-align:center;font-weight:700}
+.progressCell{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.pointsBox input{width:80px;padding:6px 8px;border:1px solid #dbe3ee;border-radius:8px;font-weight:700;text-align:right}
+.hint{color:var(--muted);font-size:12px}
+
+/* правая колонка — бары */
+.stagePanel{padding:12px}
+.chart-header{background:transparent;border:none;border-radius:0;padding:0 12px;display:flex;align-items:center;font-weight:800}
+.chart-header h2{margin:0;font-size:18px}
+.chart{margin-top:var(--row-gap)}
+.chart-row{display:flex;align-items:center;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:var(--row-pad-v) 12px;margin-bottom:var(--row-gap)}
+.chart-row:last-child{margin-bottom:0}
+.meter{position:relative;flex:1;height:14px;background:#eef2f7;border:1px solid #e2e8f0;border-radius:999px;overflow:hidden}
+.meter>span{display:block;height:100%;width:0;transition:width .5s ease}
+.val{margin-left:10px;min-width:34px;text-align:right;font-variant-numeric:tabular-nums;font-weight:800}
+
+/* footer */
+.footer{padding:10px 12px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+.bonus{position:absolute;pointer-events:none;font-size:22px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.25))}
+.container-relative{position:relative}
+#bonusLayer{position:absolute;inset:0;pointer-events:none}
+</style>
+</head>
+<body>
+<div class="wrap card">
+  <div class="header">
+    <h1>Гоночная сессия • 7 команд</h1>
+    <div class="flag">
+      <span class="stage-pill" id="stageName">СТАРТ</span>
+      <span class="timer" id="timer">00:00</span>
+      <div class="controls">
+        <button id="btnStart" class="primary">Старт</button>
+        <button id="btnPause">Пауза</button>
+        <button id="btnNext"  class="small">Следующий этап</button>
+        <button id="btnUndo"  class="small">Отмена</button>
+        <button id="btnRank"  class="small">Пересчитать позиции</button>
+        <button id="btnHard"  class="small">Чистый сброс</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Левая колонка -->
+    <div class="section card container-relative">
+      <table class="table" aria-live="polite">
+        <thead><tr><th>Команда</th><th>#</th><th>Очки</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div id="bonusLayer"></div>
+    </div>
+
+    <!-- Правая колонка -->
+    <div class="stagePanel card">
+      <div id="chartHeader" class="chart-header"><h2 id="stageTitle">СТАРТ</h2></div>
+      <div id="stageChart" class="chart"></div>
+    </div>
+  </div>
+
+  <div class="footer"><div>© Формула обучения — лёгкий старт, честный финиш.</div></div>
+</div>
+
+<script type="module">
+"use strict";
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js';
+import { getDatabase, ref, onValue, set, update, runTransaction, serverValue } from 'https://www.gstatic.com/firebasejs/12.5.0/firebase-database.js';
+
+// Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyAaWEVp6x8v3kHSJg0EBngQlockIQyRVos",
+  authDomain: "market-race-168d6.firebaseapp.com",
+  databaseURL: "https://market-race-168d6-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "market-race-168d6",
+  storageBucket: "market-race-168d6.appspot.com",
+  messagingSenderId: "565783666085",
+  appId: "1:565783666085:web:ccc185ec4c3c4600cd9c4c"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const raceRef = ref(db, 'race'); // Shared path for the race state
+
+let offset = 0;
+onValue(ref(db, '.info/serverTimeOffset'), (snap) => {
+  offset = snap.val() || 0;
+});
+
+let state = fresh(); // Initial local state before DB load
+render(); // Initial render with default state to show teams and timer
+
+onValue(raceRef, (snap) => {
+  const data = snap.val();
+  if (!data) {
+    state = fresh();
+    save();
+  } else {
+    state.teams = data.teams.map((t, i) => ({id: i, name: DEFAULT_NAMES[i], color: COLORS[i], pts: t.pts || 0}));
+    state.order = data.order || [0,1,2,3,4,5,6];
+    state.stage = data.stage || 0;
+    state.remain = data.remain || STAGES[state.stage].sec;
+    state.history = data.history || [];
+    state.running = data.running || false;
+    state.startTimestamp = data.startTimestamp || Date.now();
+  }
+  render();
+}, (error) => {
+  console.error("Firebase error:", error); // Log errors for debugging, e.g., permission denied
+  // Optional fallback to localStorage if Firebase fails
+  // state = loadFromLocal(); render();
+});
+
+/* === Конфигурация === */
+const STORAGE_KEY="race_state_vfinal_sync";
+const COLORS=["var(--c1)","var(--c2)","var(--c3)","var(--c4)","var(--c5)","var(--c6)","var(--c7)"];
+const DEFAULT_NAMES=["Porsche","Lamborghini","Williams","Lotus","Aston Martin","McLaren","Alfa Romeo"];
+const STAGES=[{name:"СТАРТ",sec:0},{name:"ЗАЕЗД 1",sec:120},{name:"ЗАЕЗД 3",sec:480},{name:"ФИНИШ",sec:0}];
+
+const $=s=>document.querySelector(s);
+const tbody=$("#tbody"), stageName=$("#stageName"), timerEl=$("#timer");
+const btnStart=$("#btnStart"), btnPause=$("#btnPause"), btnNext=$("#btnNext"), btnUndo=$("#btnUndo"), btnHard=$("#btnHard"), btnRank=$("#btnRank");
+const stageChart=$("#stageChart"), stageTitle=$("#stageTitle"), bonusLayer=$("#bonusLayer"), chartHeader=$("#chartHeader");
+
+function fresh(){
+  return {teams:DEFAULT_NAMES.map((n,i)=>({id:i,name:n,color:COLORS[i],pts:0})),
+          order:[0,1,2,3,4,5,6], stage:0, remain:STAGES[0].sec, history:[], running: false, startTimestamp: 0};
+}
+// Optional local fallback function
+function loadFromLocal(){
+  try{
+    const d=JSON.parse(localStorage.getItem(STORAGE_KEY)||"null");
+    if(!d||!Array.isArray(d.teams)||d.teams.length!==DEFAULT_NAMES.length) return fresh();
+    d.teams=d.teams.map((t,i)=>({id:i,name:DEFAULT_NAMES[i],color:COLORS[i],pts:Number(t?.pts)||0}));
+    if(!Array.isArray(d.order)||d.order.length!==d.teams.length) d.order=d.teams.map(t=>t.id);
+    if(typeof d.stage!=="number") d.stage=0;
+    if(typeof d.remain!=="number") d.remain=STAGES[d.stage].sec;
+    if(!Array.isArray(d.history)) d.history=[];
+    return d;
+  }catch{return fresh()}
+}
+function save() {
+  set(raceRef, state);
+}
+
+// Rest of the script remains the same...
+
+</script>
+</body>
+</html>
