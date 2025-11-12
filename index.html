@@ -101,8 +101,8 @@ button.primary{background:#d61f1f;border-color:#c11212;color:#fff}
 
 <script type="module">
 "use strict";
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js';
-import { getDatabase, ref, onValue, set, update, runTransaction, serverValue } from 'https://www.gstatic.com/firebasejs/12.5.0/firebase-database.js';
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js';
+import { getDatabase, ref, onValue, set, update, runTransaction, serverValue } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-database.js';
 
 // Firebase config
 const firebaseConfig = {
@@ -117,15 +117,15 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
-const raceRef = ref(db, 'race'); // Shared path for the race state
+const raceRef = ref(db, 'race');
 
 let offset = 0;
 onValue(ref(db, '.info/serverTimeOffset'), (snap) => {
   offset = snap.val() || 0;
 });
 
-let state = fresh(); // Initial local state before DB load
-render(); // Initial render with default state to show teams and timer
+let state = fresh();
+render(); // Render defaults immediately
 
 onValue(raceRef, (snap) => {
   const data = snap.val();
@@ -143,9 +143,7 @@ onValue(raceRef, (snap) => {
   }
   render();
 }, (error) => {
-  console.error("Firebase error:", error); // Log errors for debugging, e.g., permission denied
-  // Optional fallback to localStorage if Firebase fails
-  // state = loadFromLocal(); render();
+  console.error("Firebase error:", error);
 });
 
 /* === Конфигурация === */
@@ -163,25 +161,172 @@ function fresh(){
   return {teams:DEFAULT_NAMES.map((n,i)=>({id:i,name:n,color:COLORS[i],pts:0})),
           order:[0,1,2,3,4,5,6], stage:0, remain:STAGES[0].sec, history:[], running: false, startTimestamp: 0};
 }
-// Optional local fallback function
-function loadFromLocal(){
-  try{
-    const d=JSON.parse(localStorage.getItem(STORAGE_KEY)||"null");
-    if(!d||!Array.isArray(d.teams)||d.teams.length!==DEFAULT_NAMES.length) return fresh();
-    d.teams=d.teams.map((t,i)=>({id:i,name:DEFAULT_NAMES[i],color:COLORS[i],pts:Number(t?.pts)||0}));
-    if(!Array.isArray(d.order)||d.order.length!==d.teams.length) d.order=d.teams.map(t=>t.id);
-    if(typeof d.stage!=="number") d.stage=0;
-    if(typeof d.remain!=="number") d.remain=STAGES[d.stage].sec;
-    if(!Array.isArray(d.history)) d.history=[];
-    return d;
-  }catch{return fresh()}
-}
 function save() {
   set(raceRef, state);
 }
 
-// Rest of the script remains the same...
+/* Утилиты */
+const fmt=s=>{s=Math.max(0,s|0);return String((s/60|0)).padStart(2,"0")+":"+String(s%60|0).padStart(2,"0")};
+const teamsByOrder=()=>state.order.map(id=>state.teams.find(t=>t.id===id));
+const leaderPts=()=>Math.max(1,...state.teams.map(t=>t.pts),1);
+function flare(hostEl,emoji){
+  const r=hostEl.getBoundingClientRect(),h=bonusLayer.getBoundingClientRect();
+  const b=document.createElement("div"); b.className="bonus"; b.textContent=emoji;
+  b.style.left=(r.left-h.left+r.width-60)+"px"; b.style.top=(r.top-h.top-8)+"px";
+  bonusLayer.appendChild(b);
+  b.animate([{transform:"translateY(0)",opacity:1},{transform:"translateY(-26px)",opacity:0}],{duration:650,easing:"ease-out"}).onfinish=()=>b.remove();
+}
 
+/* СИНХРОНИЗАЦИЯ ВЫСОТ */
+function syncHeaderHeight(){
+  const thead=document.querySelector(".table thead");
+  const h=thead?thead.getBoundingClientRect().height:0;
+  chartHeader.style.height=h+"px";
+}
+function syncRowHeights(){
+  const left=[...document.querySelectorAll("#tbody .row")];
+  const right=[...document.querySelectorAll("#stageChart .chart-row")];
+  const padV=parseInt(getComputedStyle(document.documentElement).getPropertyValue("--row-pad-v"))||12;
+  right.forEach((r,i)=>{
+    const lh=left[i]?.offsetHeight||56;
+    r.style.height=lh+"px";
+    const meter=r.querySelector(".meter");
+    meter.style.height=Math.max(10, lh - padV*2) + "px";
+    meter.style.borderRadius=(lh/2)+"px";
+  });
+}
+
+/* Левая колонка */
+function updateBoard(){
+  const ordered=teamsByOrder();
+  tbody.innerHTML="";
+  ordered.forEach((t,idx)=>{
+    const tr=document.createElement("tr"); const td=document.createElement("td"); td.colSpan=3;
+    const row=document.createElement("div"); row.className="row";
+
+    const name=document.createElement("div"); name.className="name";
+    const dot=document.createElement("span"); dot.className="badge"; dot.style.background=t.color;
+    const title=document.createElement("span"); title.textContent=t.name;
+    name.append(dot,title);
+
+    const pos=document.createElement("div"); pos.className="pos"; pos.textContent=idx+1;
+
+    const cell=document.createElement("div"); cell.className="progressCell";
+    const box=document.createElement("div"); box.className="pointsBox";
+    const inp=document.createElement("input"); inp.type="number"; inp.step="1"; inp.placeholder="0";
+    inp.addEventListener("keydown",e=>{
+      if(e.key==="Enter"){ applyDelta(t, parseInt(inp.value||"0",10)||0, row); inp.value=""; }
+    });
+    const hint=document.createElement("div"); hint.className="hint"; hint.textContent="Введите баллы и Enter";
+    box.append(inp); cell.append(box,hint);
+
+    row.append(name,pos,cell); td.appendChild(row); tr.appendChild(td); tbody.appendChild(tr);
+  });
+}
+
+/* Правая колонка */
+function updateChart(){
+  stageTitle.textContent=STAGES[state.stage].name;
+  const ordered=teamsByOrder(); const lead=leaderPts();
+  stageChart.innerHTML="";
+  ordered.forEach(t=>{
+    const row=document.createElement("div"); row.className="chart-row";
+    const m=document.createElement("div"); m.className="meter";
+    const f=document.createElement("span"); f.style.background=t.color; f.style.width=(t.pts/lead*100).toFixed(1)+"%"; m.appendChild(f);
+    const v=document.createElement("div"); v.className="val"; v.textContent=t.pts;
+    row.append(m,v); stageChart.appendChild(row);
+  });
+  // критично: выровнять заголовок и строки по высоте
+  syncHeaderHeight(); syncRowHeights();
+}
+
+/* Очки и порядок */
+function applyDelta(team, delta, rowEl){
+  if(!delta) return;
+  const teamIndex = state.teams.findIndex(t => t.id === team.id);
+  if(teamIndex === -1) return;
+  // Optimistic local update
+  state.teams[teamIndex].pts = Math.max(0, state.teams[teamIndex].pts + delta);
+  state.history.push({ts: Date.now(), id: team.id, delta, stage: state.stage});
+  render();
+  flare(rowEl, "⚡");
+  // Commit to DB and sync history
+  runTransaction(ref(db, `race/teams/${teamIndex}/pts`), (current) => Math.max(0, (current || 0) + delta)).then(() => {
+    save(); // Sync full state including history after successful transaction
+  });
+}
+function recalcOrder(){
+  const prevOrder=state.order.slice();
+  const byIdIndex=Object.fromEntries(prevOrder.map((id,i)=>[id,i]));
+  const sortedIds=state.teams.map(t=>t.id).sort((a,b)=>{
+    const ta=state.teams[a],tb=state.teams[b];
+    if(tb.pts!==ta.pts) return tb.pts-ta.pts;
+    return byIdIndex[a]-byIdIndex[b];
+  });
+  state.order=sortedIds; save(); render();
+}
+
+/* Таймер/управление */
+function undo(){
+  const h = state.history[state.history.length - 1];
+  if(!h) return;
+  const t = state.teams.find(t => t.id === h.id);
+  if(t) applyDelta(t, -h.delta, null); // No flare for undo
+}
+function next(){if(state.stage<STAGES.length-1){state.stage++;state.remain=STAGES[state.stage].sec;state.running=false;btnStart.disabled=false;save();render();}}
+function hard(){if(confirm("Обнулить все результаты и перезапустить?")){set(raceRef, fresh()); localStorage.removeItem(STORAGE_KEY);location.reload();}}
+
+let tickLast=performance.now();
+function tick(now){
+  if(!state.running) return;
+  const serverNow = Date.now() + offset;
+  const elapsed = Math.floor((serverNow - state.startTimestamp) / 1000);
+  const newRemain = Math.max(0, STAGES[state.stage].sec - elapsed);
+  if(newRemain < state.remain){
+    state.remain = newRemain;
+    timerEl.textContent = fmt(state.remain);
+    if(state.remain <= 0){
+      state.running = false;
+      state.remain = 0;
+      save();
+    }
+  }
+  requestAnimationFrame(tick);
+}
+function start(){
+  if(STAGES[state.stage].name === "ФИНИШ" || state.running) return;
+  const initial = STAGES[state.stage].sec;
+  const elapsed = initial - state.remain;
+  const serverNow = Date.now() + offset;
+  state.startTimestamp = serverNow - elapsed * 1000;
+  state.running = true;
+  save();
+  tickLast = performance.now();
+  requestAnimationFrame(tick);
+}
+function pause(){
+  if(!state.running) return;
+  state.running = false;
+  const serverNow = Date.now() + offset;
+  const elapsed = Math.floor((serverNow - state.startTimestamp) / 1000);
+  state.remain = Math.max(0, STAGES[state.stage].sec - elapsed);
+  save();
+}
+
+/* Рендер и инициализация */
+function render(){
+  stageName.textContent=STAGES[state.stage].name;
+  timerEl.textContent=fmt(state.remain);
+  // Sync button states for multi-device consistency
+  btnStart.disabled = state.running || STAGES[state.stage].name === "ФИНИШ";
+  updateBoard(); updateChart();
+}
+function boot(){
+  btnStart.onclick=start; btnPause.onclick=pause; btnNext.onclick=next; btnUndo.onclick=undo; btnHard.onclick=hard; btnRank.onclick=recalcOrder;
+  window.addEventListener("resize",()=>{syncHeaderHeight(); syncRowHeights();});
+  setTimeout(()=>{syncHeaderHeight(); syncRowHeights();}, 50);
+}
+document.readyState==="loading"?document.addEventListener("DOMContentLoaded",boot):boot();
 </script>
 </body>
 </html>
